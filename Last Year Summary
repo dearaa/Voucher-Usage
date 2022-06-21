@@ -1,0 +1,354 @@
+--month_created, column detail, voucher type, create qtty, fetch qtty, use qtty, order qtty, gmv
+SELECT
+	creator.coupon_id,
+	creator.coupon_type,
+	creator.create_pin,
+	organization_name,
+	qty.*
+FROM
+	(
+		SELECT
+			1 type,
+			fcbbc.batch_id coupon_id,
+			CASE
+				WHEN coupon_type = 900
+				THEN 'No Min Spend Voucher'
+				WHEN coupon_type = 901
+				THEN 'Minimum Spend Voucher'
+				WHEN coupon_type = 902
+				THEN 'Percentage Discount Voucher'
+				WHEN coupon_type = 903
+				THEN 'Shipping Voucher'
+				WHEN coupon_type = 905
+				THEN 'New Shipping Voucher(With minimum spend)'
+				WHEN coupon_type = 904
+				THEN 'New Shipping Voucher (Direct Cut)'
+			END coupon_type,
+			creator create_pin,
+			coupon_title coupon_name,
+			quota,
+			CASE
+				WHEN coupon_type = 902
+				THEN(Discount / quota) * 100
+				ELSE discount
+			END voucher_value,
+			batch_add.high_discount_amount voucher_max_discount,
+			fcbbc.quota voucher_min_purchase,
+			create_time created,
+			begin_time,
+			end_time,
+			'' coupon_min_purchase,
+			'' coupon_discount_amount,
+			'' coupon_max_discount,
+			'vou_batch' flag
+		FROM
+			(
+				SELECT
+					*
+				FROM
+					fdm.fdm_coupon_batch_batch_chain
+				WHERE
+					dp = 'ACTIVE'
+					-- and batch_id in (9785841, 9799969, 9499765)
+			)
+			fcbbc --alex mode on
+		LEFT JOIN
+			(
+				SELECT
+					batch_id,
+					high_discount_amount
+				FROM
+					gdm.gdm_m07_glb_cps_batch_da
+				WHERE
+					dt = sysdate( - 1)
+			)
+			batch_add --bukan bangsadd
+		ON
+			fcbbc.batch_id = batch_add.batch_id
+		
+		UNION ALL
+		
+		SELECT
+			1 type,
+			coupon_id,
+			CASE
+				WHEN coupon_type = 0
+				THEN 'No Min Spend Voucher'
+				WHEN coupon_type = 1
+					AND get_json_object(quota, '$.type') = 0
+				THEN 'Minimum Spend Voucher'
+				WHEN coupon_type = 1
+					AND get_json_object(quota, '$.type') = 1
+				THEN 'Percentage Discount Voucher'
+				WHEN coupon_type = 2
+				THEN 'Shipping Voucher'
+				ELSE 'apa ya'
+			END coupon_type,
+			create_pin,
+			coupon_name,
+			quota,
+			get_json_object(quota, '$.discount') voucher_value, -- voucher_value / Discount
+			get_json_object(quota, '$.maxDiscount') voucher_max_discount,
+			get_json_object(quota, '$.reach') voucher_min_purchase,
+			created,
+			begin_time,
+			end_time,
+			'' coupon_min_purchase,
+			'' coupon_discount_amount,
+			'' coupon_max_discount,
+			'vou_voucher' flag
+		FROM
+			fdm.fdm_eptid_promotion_coupon_card_info_chain
+		WHERE
+			DP = 'ACTIVE'
+		-- and coupon_id  in (68997, 62553)
+		
+		UNION ALL
+		
+		SELECT
+			2 type,
+			coupon_id,
+			CASE
+				WHEN coupon_type = 1
+				THEN 'Discount Amount'
+				WHEN coupon_type = 2
+				THEN 'Discount percentage'
+				ELSE 'apa ya'
+			END coupon_type,
+			create_pin,
+			coupon_name,
+			quota,
+			'' voucher_value,
+			'' voucher_max_discount,
+			'' voucher_min_purchase,
+			created,
+			begin_time,
+			end_time,
+			split(quota, '\\-') [0] coupon_min_purchase,
+			split(quota, '\\-') [1] coupon_discount_amount,
+			max_discount coupon_max_discount,
+			'coupon' flag
+		FROM
+			fdm.fdm_eptid_promotion_coupon_info_chain
+		WHERE
+			DP = 'ACTIVE'
+	)
+	creator
+LEFT JOIN
+	(
+		SELECT
+			month_created,
+			adm.cps_id,
+			Column_Details,
+			-- voucher_detail,
+			cat1,
+			SUM(coupon_amount) coupon_amount,
+			SUM(create_qtty) create_qtty,
+			SUM(fetch_qtty) fetch_qtty,
+			-- SUM(use_qtty) use_qtty,
+			SUM(parent_ordqty) parent_ordqty,
+			SUM(child_ordqty) child_ordqty,
+			SUM(gmv_eff) total_gmv
+		FROM
+			(
+				SELECT
+					cps_id,
+					fetch_qtty,
+					create_qtty,
+					use_qtty,
+					SUBSTR(create_tm, 0, 7) month_created,
+					CASE
+						WHEN cps_type = 900
+						THEN 'Total Direct Cut Voucher'
+						WHEN cps_type = 901
+						THEN 'Total Min. Spend Voucher'
+						WHEN cps_type = 902
+						THEN 'Total Percent Discount Voucher'
+						WHEN cps_type = 903
+						THEN 'Shipping Voucher'
+						WHEN cps_type = 904
+						THEN 'New Shipping Voucher (Direct Cut)'
+						WHEN cps_type = 905
+						THEN 'New Shipping Voucher(With minimum spend)'
+					END AS voucher_detail,
+					ord_qtty,
+					total_after_prefr_amt
+				FROM
+					adm.adm_s07_glb_voucher_cps_card_sum
+				WHERE
+					YEAR(create_tm) >= '2021'
+				--	AND
+				--	(
+				--		MONTH(create_tm) BETWEEN MONTH(sysdate( - 90)) AND MONTH(sysdate( - 30))
+				--	)
+					--AND SUBSTR(create_tm, 0, 10) BETWEEN '2021-04-01' AND '2021-04-31'
+					AND dt = sysdate( - 1)
+			)
+			adm
+		LEFT JOIN
+			(
+				SELECT
+					batch_id,
+					CASE
+						WHEN ext_value = 0
+						THEN 'Voucher - From Back End'
+						WHEN ext_value = 1
+						THEN 'Voucher - Customer Claim'
+						WHEN ext_value = 2
+						THEN 'Voucher - Other Activity'
+						ELSE 'Voucher - Event Activity'
+					END AS Column_Details
+				FROM
+					fdm.fdm_coupon_batch_batch_ext_chain
+				WHERE
+					ext_type = 35
+					AND dp = 'ACTIVE'
+			)
+			fdm
+		ON
+			adm.cps_id = fdm.batch_id
+		LEFT JOIN
+			(
+				SELECT
+					cps_id,
+					cat_lvl1_name_en cat1,
+					SUM(cps_amt) coupon_amount,
+					COUNT(DISTINCT parent_ord_id) parent_ordqty,
+					COUNT(DISTINCT ord_id) child_ordqty,
+					SUM(after_prefr_amt) gmv_eff
+				FROM
+					gdm.gdm_ord_ord_det
+				WHERE
+					ord_state IN(1, 6)
+					AND YEAR(book_dt) >= '2021'
+				--	AND
+				--	(
+				--		MONTH(dt) BETWEEN MONTH(sysdate( - 90)) AND MONTH(sysdate( - 30))
+				--	)
+				GROUP BY
+					cps_id,
+					cat_lvl1_name_en
+			)
+			ord
+		ON
+			ord.cps_id = adm.cps_id
+		GROUP BY
+			Column_Details,
+			adm.cps_id,
+			month_created,
+			voucher_detail,
+			cat1
+		
+		UNION ALL
+		
+		SELECT
+			month_created,
+			adma.cps_id,
+			'Coupon' AS Column_Details,
+			--voucher_detail,
+			cat1,
+			SUM(coupon_amount) coupon_amount,
+			SUM(create_qtty) create_qtty,
+			'NULL' AS fetch_qtty,
+			--SUM(use_qtty) use_qtty,
+			SUM(parent_ordqty) parent_ordqty,
+			SUM(child_ordqty) child_ordqty,
+			SUM(gmv_eff) total_gmv
+		FROM
+			(
+				SELECT
+					cps_id,
+					SUBSTR(create_tm, 0, 7) month_created,
+					create_qtty,
+					use_qtty,
+					ord_qtty,
+					total_after_prefr_amt,
+					CASE
+						WHEN cps_type = 1
+						THEN 'Discounted Prices Contains Code'
+						WHEN cps_type = 2
+						THEN 'Discounted Prices Directly'
+					END AS voucher_detail
+				FROM
+					adm.adm_s07_glb_coupon_cps_code_sum
+				WHERE
+					YEAR(create_tm) >= '2021'
+					--AND
+				--	(
+				--		MONTH(create_tm) BETWEEN MONTH(sysdate( - 90)) AND MONTH(sysdate( - 30))
+				--	)
+					--SUBSTR(create_tm, 0, 10) between '2021-02-01' and '2021-04-31'
+					AND dt = sysdate( - 1)
+			)
+			adma
+		LEFT JOIN
+			(
+				SELECT
+					cps_id,
+					cat_lvl1_name_en cat1,
+					SUM(cps_amt) coupon_amount,
+					COUNT(DISTINCT parent_ord_id) parent_ordqty,
+					COUNT(DISTINCT ord_id) child_ordqty,
+					SUM(after_prefr_amt) gmv_eff
+				FROM
+					gdm.gdm_ord_ord_det
+				WHERE
+					ord_state IN(1, 6)
+					AND YEAR(book_dt) >= '2021'
+				--	AND
+				--	(
+				--		MONTH(dt) BETWEEN MONTH(sysdate( - 90)) AND MONTH(sysdate( - 30))
+				--	)
+				GROUP BY
+					cps_id,
+					cat_lvl1_name_en
+			)
+			ord
+		ON
+			ord.cps_id = adma.cps_id
+		GROUP BY
+			month_created,
+			adma.cps_id,
+			'Coupon',
+			voucher_detail,
+			cat1
+	)
+	qty ON qty.cps_id = creator.coupon_id
+LEFT JOIN
+	(
+		SELECT
+			user_name,
+			organization_name
+		FROM
+			(
+				SELECT
+					user_name,
+					organization_id
+				FROM
+					fdm.fdm_omdm_id_int_t_omdm_hr_user_chain
+				WHERE
+					dp = 'ACTIVE'
+			)
+			c
+		LEFT JOIN
+			(
+				SELECT
+					id,
+					CASE
+						WHEN organization_name IS NULL
+						THEN 'Seller'
+						ELSE organization_name
+					END AS organization_name
+				FROM
+					fdm.fdm_omdm_id_int_t_omdm_hr_organization_chain
+				WHERE
+					dp = 'ACTIVE'
+			)
+			d
+		ON
+			c.organization_id = d.id
+	)
+	dept ON creator.create_pin = dept.user_name
+WHERE
+	YEAR(creator.created) = '2021'
+	--AND MONTH(creator.created) = MONTH(sysdate( - 30))
